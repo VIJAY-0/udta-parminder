@@ -30,14 +30,6 @@ interface Obstacle {
   passed: boolean;
 }
 
-// Audio Configuration - Only include files that actually exist in your folders
-const AUDIO_PATHS = {
-  start: ["/assets/audio/start/1.mp3"],
-  bg: ["/assets/audio/bg/1.mp3"],
-  click: ["/assets/audio/click/1.mp3"],
-  gameover: ["/assets/audio/gameover/1.mp3"],
-};
-
 export default function App() {
   const [gameState, setGameState] = useState<GameState>(GameState.START);
   const [score, setScore] = useState(0);
@@ -45,7 +37,12 @@ export default function App() {
     return Number(localStorage.getItem("heli_high_score") || 0);
   });
   const [isMuted, setIsMuted] = useState(false);
-  const [audioStatus, setAudioStatus] = useState<Record<string, string>>({});
+  const [audioPaths, setAudioPaths] = useState<Record<string, string[]>>({
+    start: [],
+    bg: [],
+    click: [],
+    gameover: [],
+  });
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -78,19 +75,14 @@ export default function App() {
   const GAP_RATIO = 0.55;
 
   // Audio Helper
-  const playSound = useCallback((type: keyof typeof AUDIO_PATHS, loop = false) => {
+  const playSound = useCallback((type: string, loop = false) => {
     if (isMuted) return;
-    const paths = AUDIO_PATHS[type];
+    const paths = audioPaths[type];
     if (!paths || paths.length === 0) return;
     
     const randomPath = paths[Math.floor(Math.random() * paths.length)];
-    
-    // Check if we should even try to play (simple check to avoid 404s if user hasn't uploaded yet)
-    // In a real app we'd check if the file exists, but here we'll just try and catch
     const audio = new Audio(randomPath);
     
-    setAudioStatus(prev => ({ ...prev, [type]: 'loading...' }));
-
     if (type === 'bg') {
       if (bgAudio.current) {
         bgAudio.current.pause();
@@ -103,34 +95,20 @@ export default function App() {
       if (type === 'click') sfxAudio.current = audio;
     }
 
-    audio.onplay = () => setAudioStatus(prev => ({ ...prev, [type]: 'playing' }));
     audio.onended = () => {
-      setAudioStatus(prev => ({ ...prev, [type]: 'ended' }));
       if (loop) {
         audio.currentTime = 0;
-        audio.play().catch(e => console.log("Loop restart failed", e));
+        audio.play().catch(e => {});
       }
     };
 
     audio.play().catch((err) => {
-      console.warn(`Audio play failed for ${type} (${randomPath}):`, err.message);
-      setAudioStatus(prev => ({ ...prev, [type]: `error: ${err.message}` }));
       // If it's the start sound and it fails, we should still proceed to the game
       if (type === 'start' && gameState === GameState.LOADING) {
         // The timeout in handleStart will handle the transition
       }
     });
-  }, [isMuted, gameState]);
-
-  const testAudio = () => {
-    // Test with a known working public MP3 to verify browser audio is working
-    const testSound = new Audio("https://actions.google.com/sounds/v1/cartoon/pop.ogg");
-    testSound.play().then(() => {
-      alert("Test sound played! If you heard this, your browser audio is working. Now ensure your local files are uploaded correctly.");
-    }).catch(err => {
-      alert("Browser blocked audio. Please click anywhere on the game first, then try again.");
-    });
-  };
+  }, [isMuted, gameState, audioPaths]);
 
   // Handle window resizing
   useEffect(() => {
@@ -150,15 +128,30 @@ export default function App() {
   // Load default pilot image from assets folder
   useEffect(() => {
     const img = new Image();
-    // Add a timestamp to bypass potential caching of an empty file
-    img.src = `/assets/pilot.png?t=${Date.now()}`;
+    // Load the image normally to allow browser caching for better performance
+    img.src = "/assets/pilot.png";
     img.onload = () => {
-      console.log("Pilot image loaded successfully");
       faceImg.current = img;
     };
     img.onerror = () => {
       console.error("Failed to load pilot image. Please ensure /public/assets/pilot.png is a valid image file and not empty.");
     };
+  }, []);
+
+  // Scan audio folders on mount
+  useEffect(() => {
+    const scanAudio = async () => {
+      try {
+        const response = await fetch("/api/audio");
+        if (response.ok) {
+          const data = await response.json();
+          setAudioPaths(data);
+        }
+      } catch (error) {
+        console.error("Failed to fetch audio list:", error);
+      }
+    };
+    scanAudio();
   }, []);
 
   const spawnObstacle = useCallback((width: number, height: number) => {
@@ -586,26 +579,6 @@ export default function App() {
 
           <div className="absolute bottom-20 md:bottom-5 left-1/2 -translate-x-1/2 bg-black/40 text-white px-4 md:px-5 py-1 rounded-full text-[10px] md:text-sm font-bold pointer-events-none whitespace-nowrap">
             HOLD TO FLY UP
-          </div>
-
-          {/* Audio Debug Panel */}
-          <div className="absolute top-20 left-4 bg-black/60 text-white p-3 rounded-xl text-[10px] font-mono z-40 pointer-events-auto">
-            <div className="font-bold border-b border-white/20 mb-1 pb-1 flex justify-between gap-4">
-              <span>AUDIO DEBUG</span>
-              <button onClick={testAudio} className="text-blue-400 hover:underline">TEST BROWSER AUDIO</button>
-            </div>
-            {Object.entries(AUDIO_PATHS).map(([type, paths]) => (
-              <div key={type} className="flex justify-between gap-4">
-                <span className="opacity-60">{type}:</span>
-                <span className={audioStatus[type]?.includes('error') ? 'text-red-400' : audioStatus[type] === 'playing' ? 'text-green-400' : ''}>
-                  {audioStatus[type] || 'idle'}
-                </span>
-              </div>
-            ))}
-            <div className="mt-2 text-[8px] opacity-40 leading-tight">
-              * Ensure files exist in /public/assets/audio/<br/>
-              * Files must NOT be 0 bytes
-            </div>
           </div>
         </div>
 
