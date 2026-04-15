@@ -5,10 +5,11 @@
 
 import React, { useEffect, useRef, useState, useCallback } from "react";
 import { motion, AnimatePresence } from "motion/react";
-import { Upload, Play, RotateCcw, Trophy, Info, Github } from "lucide-react";
+import { Upload, Play, RotateCcw, Trophy, Info, Github, Volume2, VolumeX } from "lucide-react";
 
 enum GameState {
   START,
+  LOADING,
   PLAYING,
   GAMEOVER,
 }
@@ -29,16 +30,30 @@ interface Obstacle {
   passed: boolean;
 }
 
+// Audio Configuration - Only include files that actually exist in your folders
+const AUDIO_PATHS = {
+  start: ["/assets/audio/start/1.mp3"],
+  bg: ["/assets/audio/bg/1.mp3"],
+  click: ["/assets/audio/click/1.mp3"],
+  gameover: ["/assets/audio/gameover/1.mp3"],
+};
+
 export default function App() {
   const [gameState, setGameState] = useState<GameState>(GameState.START);
   const [score, setScore] = useState(0);
   const [highScore, setHighScore] = useState(() => {
     return Number(localStorage.getItem("heli_high_score") || 0);
   });
+  const [isMuted, setIsMuted] = useState(false);
+  const [audioStatus, setAudioStatus] = useState<Record<string, string>>({});
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [size, setSize] = useState({ w: 800, h: 500 });
+
+  // Audio Refs
+  const bgAudio = useRef<HTMLAudioElement | null>(null);
+  const sfxAudio = useRef<HTMLAudioElement | null>(null);
 
   const heli = useRef({ 
     x: 100, 
@@ -62,12 +77,67 @@ export default function App() {
   const OBS_W = 70;
   const GAP_RATIO = 0.55;
 
+  // Audio Helper
+  const playSound = useCallback((type: keyof typeof AUDIO_PATHS, loop = false) => {
+    if (isMuted) return;
+    const paths = AUDIO_PATHS[type];
+    if (!paths || paths.length === 0) return;
+    
+    const randomPath = paths[Math.floor(Math.random() * paths.length)];
+    
+    // Check if we should even try to play (simple check to avoid 404s if user hasn't uploaded yet)
+    // In a real app we'd check if the file exists, but here we'll just try and catch
+    const audio = new Audio(randomPath);
+    
+    setAudioStatus(prev => ({ ...prev, [type]: 'loading...' }));
+
+    if (type === 'bg') {
+      if (bgAudio.current) {
+        bgAudio.current.pause();
+      }
+      bgAudio.current = audio;
+      audio.loop = loop;
+      audio.volume = 0.4;
+    } else {
+      audio.volume = 0.6;
+      if (type === 'click') sfxAudio.current = audio;
+    }
+
+    audio.onplay = () => setAudioStatus(prev => ({ ...prev, [type]: 'playing' }));
+    audio.onended = () => {
+      setAudioStatus(prev => ({ ...prev, [type]: 'ended' }));
+      if (loop) {
+        audio.currentTime = 0;
+        audio.play().catch(e => console.log("Loop restart failed", e));
+      }
+    };
+
+    audio.play().catch((err) => {
+      console.warn(`Audio play failed for ${type} (${randomPath}):`, err.message);
+      setAudioStatus(prev => ({ ...prev, [type]: `error: ${err.message}` }));
+      // If it's the start sound and it fails, we should still proceed to the game
+      if (type === 'start' && gameState === GameState.LOADING) {
+        // The timeout in handleStart will handle the transition
+      }
+    });
+  }, [isMuted, gameState]);
+
+  const testAudio = () => {
+    // Test with a known working public MP3 to verify browser audio is working
+    const testSound = new Audio("https://actions.google.com/sounds/v1/cartoon/pop.ogg");
+    testSound.play().then(() => {
+      alert("Test sound played! If you heard this, your browser audio is working. Now ensure your local files are uploaded correctly.");
+    }).catch(err => {
+      alert("Browser blocked audio. Please click anywhere on the game first, then try again.");
+    });
+  };
+
   // Handle window resizing
   useEffect(() => {
     const handleResize = () => {
       if (containerRef.current) {
         const width = containerRef.current.clientWidth;
-        const height = Math.min(window.innerHeight * 0.6, 500);
+        const height = containerRef.current.clientHeight;
         setSize({ w: width, h: height });
       }
     };
@@ -75,6 +145,20 @@ export default function App() {
     handleResize();
     window.addEventListener("resize", handleResize);
     return () => window.removeEventListener("resize", handleResize);
+  }, []);
+
+  // Load default pilot image from assets folder
+  useEffect(() => {
+    const img = new Image();
+    // Add a timestamp to bypass potential caching of an empty file
+    img.src = `/assets/pilot.png?t=${Date.now()}`;
+    img.onload = () => {
+      console.log("Pilot image loaded successfully");
+      faceImg.current = img;
+    };
+    img.onerror = () => {
+      console.error("Failed to load pilot image. Please ensure /public/assets/pilot.png is a valid image file and not empty.");
+    };
   }, []);
 
   const spawnObstacle = useCallback((width: number, height: number) => {
@@ -95,6 +179,10 @@ export default function App() {
     setGameState(GameState.GAMEOVER);
     screenShake.current = 15;
     
+    // Play Game Over Music
+    playSound('gameover');
+    if (bgAudio.current) bgAudio.current.pause();
+
     setHighScore((prev) => {
       const newHigh = Math.max(prev, score);
       localStorage.setItem("heli_high_score", newHigh.toString());
@@ -340,64 +428,70 @@ export default function App() {
   }, [gameState, spawnObstacle, crash]);
 
   const handleStart = () => {
-    setScore(0);
-    heli.current = { 
-      x: 100, 
-      y: size.h / 2, 
-      velocity: 0, 
-      angle: 0, 
-      spin: 0,
-      width: 60,
-      height: 60
-    };
-    obstacles.current = [];
-    crashParticles.current = [];
-    frameCount.current = 0;
-    setGameState(GameState.PLAYING);
+    playSound('start');
+    setGameState(GameState.LOADING);
+    
+    // Pause for 2 seconds while start music plays
+    setTimeout(() => {
+      setScore(0);
+      heli.current = { 
+        x: 100, 
+        y: size.h / 2, 
+        velocity: 0, 
+        angle: 0, 
+        spin: 0,
+        width: 60,
+        height: 60
+      };
+      obstacles.current = [];
+      crashParticles.current = [];
+      frameCount.current = 0;
+      setGameState(GameState.PLAYING);
+      playSound('bg', true);
+    }, 2000);
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      const img = new Image();
-      img.src = URL.createObjectURL(file);
-      img.onload = () => {
-        faceImg.current = img;
-      };
+  const handleInteraction = () => {
+    if (gameState === GameState.PLAYING) {
+      isHolding.current = true;
+      playSound('click');
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#6366f1] flex items-center justify-center p-4 font-sans">
-      <div className="w-full max-w-[900px] bg-white rounded-[40px] border-[12px] border-[#2f3542] shadow-[0_20px_0_rgba(0,0,0,0.2)] overflow-hidden flex flex-col relative">
-        {/* Top Bar */}
-        <header className="h-20 px-10 flex items-center justify-between bg-[#2f3542] text-white">
-          <div className="flex items-center gap-3 text-[28px] font-black tracking-tighter">
+    <div className="fixed inset-0 bg-[#6366f1] flex flex-col font-sans overflow-hidden">
+      <div className="flex-1 flex flex-col relative w-full h-full">
+        {/* Top Bar - More compact on mobile */}
+        <header className="h-14 md:h-20 px-4 md:px-10 flex items-center justify-between bg-[#2f3542] text-white z-20">
+          <div className="flex items-center gap-2 md:gap-3 text-lg md:text-[28px] font-black tracking-tighter">
             <span>🚁</span>
-            <span>HELI-FACE ARCADE</span>
+            <span className="hidden sm:inline">HELI-FACE ARCADE</span>
+            <span className="sm:hidden uppercase">HELI-FACE</span>
           </div>
-          <div className="flex gap-8 text-xl font-bold">
-            <div className="bg-white/10 px-5 py-2 rounded-full">
-              SCORE: <span className="text-[#2ed573]">{score.toLocaleString('en-US', { minimumIntegerDigits: 5 })}</span>
+          <div className="flex items-center gap-2 md:gap-8 text-sm md:text-xl font-bold">
+            <div className="bg-white/10 px-3 md:px-5 py-1 md:py-2 rounded-full">
+              S: <span className="text-[#2ed573] font-mono">{score.toLocaleString('en-US', { minimumIntegerDigits: 3 })}</span>
             </div>
-            <div className="bg-white/10 px-5 py-2 rounded-full">
-              BEST: <span className="text-[#ffa502]">{highScore.toLocaleString('en-US', { minimumIntegerDigits: 5 })}</span>
+            <div className="bg-white/10 px-3 md:px-5 py-1 md:py-2 rounded-full">
+              B: <span className="text-[#ffa502] font-mono">{highScore.toLocaleString('en-US', { minimumIntegerDigits: 3 })}</span>
             </div>
+            <button 
+              onClick={() => setIsMuted(!isMuted)}
+              className="p-2 hover:bg-white/10 rounded-full transition-colors"
+            >
+              {isMuted ? <VolumeX size={20} /> : <Volume2 size={20} />}
+            </button>
           </div>
         </header>
 
         {/* Game Viewport */}
         <div 
           ref={containerRef}
-          className="flex-1 relative bg-[#70a1ff] overflow-hidden"
-          onMouseDown={() => {
-            if (gameState === GameState.PLAYING) isHolding.current = true;
-          }}
+          className="flex-1 relative bg-[#70a1ff] overflow-hidden touch-none"
+          onMouseDown={handleInteraction}
           onMouseUp={() => (isHolding.current = false)}
           onMouseLeave={() => (isHolding.current = false)}
-          onTouchStart={() => {
-            if (gameState === GameState.PLAYING) isHolding.current = true;
-          }}
+          onTouchStart={handleInteraction}
           onTouchEnd={() => (isHolding.current = false)}
         >
           <canvas
@@ -415,25 +509,40 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="absolute inset-0 bg-black/40 backdrop-blur-sm flex flex-col items-center justify-center p-6 text-center"
+                className="absolute inset-0 bg-black/40 backdrop-blur-sm flex flex-col items-center justify-center p-4 text-center z-30"
               >
                 <motion.div
                   initial={{ y: 20, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
-                  className="max-w-md bg-white p-10 rounded-[32px] border-8 border-[#2f3542] shadow-[0_10px_0_rgba(0,0,0,0.1)]"
+                  className="w-full max-w-sm bg-white p-6 md:p-10 rounded-[24px] md:rounded-[32px] border-4 md:border-8 border-[#2f3542] shadow-[0_10px_0_rgba(0,0,0,0.1)]"
                 >
-                  <h2 className="text-4xl font-black mb-4 uppercase tracking-tighter text-[#2f3542]">Ready to Fly?</h2>
-                  <p className="text-[#2f3542] mb-8 font-bold opacity-70">
-                    Upload your face to become the pilot! Hold to fly up, release to fall.
+                  <h2 className="text-2xl md:text-4xl font-black mb-2 md:mb-4 uppercase tracking-tighter text-[#2f3542]">Ready to Fly?</h2>
+                  <p className="text-[#2f3542] mb-6 md:mb-8 font-bold opacity-70 text-sm md:text-base">
+                    Fly with the Bamboo Copter! Hold to fly up, release to fall.
                   </p>
                   
                   <button 
                     onClick={handleStart}
-                    className="w-full py-4 bg-[#2ed573] hover:bg-[#26c167] text-white rounded-2xl font-black text-2xl border-b-[6px] border-[#21a455] transition-all active:translate-y-1 active:border-b-0"
+                    className="w-full py-3 md:py-4 bg-[#2ed573] hover:bg-[#26c167] text-white rounded-xl md:rounded-2xl font-black text-xl md:text-2xl border-b-[4px] md:border-b-[6px] border-[#21a455] transition-all active:translate-y-1 active:border-b-0"
                   >
                     START MISSION
                   </button>
                 </motion.div>
+              </motion.div>
+            )}
+
+            {gameState === GameState.LOADING && (
+              <motion.div 
+                key="loading"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+                className="absolute inset-0 bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center z-30"
+              >
+                <div className="text-white">
+                  <div className="text-6xl mb-4 animate-bounce">🎋</div>
+                  <h2 className="text-3xl font-black uppercase tracking-widest italic">GET READY!</h2>
+                </div>
               </motion.div>
             )}
 
@@ -443,66 +552,85 @@ export default function App() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 exit={{ opacity: 0 }}
-                className="absolute inset-0 bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-6 text-center"
+                className="absolute inset-0 bg-black/60 backdrop-blur-md flex flex-col items-center justify-center p-4 text-center z-30"
               >
                 <motion.div
                   initial={{ scale: 0.9, opacity: 0 }}
                   animate={{ scale: 1, opacity: 1 }}
-                  className="bg-white p-10 rounded-[32px] border-8 border-[#2f3542] shadow-[0_10px_0_rgba(0,0,0,0.1)]"
+                  className="w-full max-w-sm bg-white p-6 md:p-10 rounded-[24px] md:rounded-[32px] border-4 md:border-8 border-[#2f3542] shadow-[0_10px_0_rgba(0,0,0,0.1)]"
                 >
-                  <h2 className="text-5xl font-black mb-2 uppercase tracking-tighter text-[#ff4757]">Mission Failed</h2>
-                  <p className="text-[#2f3542] font-bold opacity-60 mb-8">You crashed into the obstacles!</p>
+                  <h2 className="text-3xl md:text-5xl font-black mb-2 uppercase tracking-tighter text-[#ff4757]">Mission Failed</h2>
+                  <p className="text-[#2f3542] font-bold opacity-60 mb-6 md:mb-8 text-sm md:text-base">You crashed into the obstacles!</p>
                   
-                  <div className="grid grid-cols-2 gap-8 mb-10">
+                  <div className="grid grid-cols-2 gap-4 md:gap-8 mb-6 md:mb-10">
                     <div className="flex flex-col">
-                      <span className="text-xs uppercase tracking-widest text-[#2f3542] font-black opacity-40">Score</span>
-                      <span className="text-4xl font-black text-[#2f3542]">{score}</span>
+                      <span className="text-[10px] md:text-xs uppercase tracking-widest text-[#2f3542] font-black opacity-40">Score</span>
+                      <span className="text-2xl md:text-4xl font-black text-[#2f3542]">{score}</span>
                     </div>
                     <div className="flex flex-col">
-                      <span className="text-xs uppercase tracking-widest text-[#2f3542] font-black opacity-40">Best</span>
-                      <span className="text-4xl font-black text-[#ffa502]">{highScore}</span>
+                      <span className="text-[10px] md:text-xs uppercase tracking-widest text-[#2f3542] font-black opacity-40">Best</span>
+                      <span className="text-2xl md:text-4xl font-black text-[#ffa502]">{highScore}</span>
                     </div>
                   </div>
 
                   <button 
                     onClick={handleStart}
-                    className="w-full py-4 bg-[#ff4757] hover:bg-[#ff3344] text-white rounded-2xl font-black text-2xl border-b-[6px] border-[#d63031] transition-all active:translate-y-1 active:border-b-0"
+                    className="w-full py-3 md:py-4 bg-[#2ed573] hover:bg-[#26c167] text-white rounded-xl md:rounded-2xl font-black text-xl md:text-2xl border-b-[4px] md:border-b-[6px] border-[#21a455] transition-all active:translate-y-1 active:border-b-0"
                   >
-                    TRY AGAIN
+                    START MISSION
                   </button>
                 </motion.div>
               </motion.div>
             )}
           </AnimatePresence>
 
-          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 bg-black/40 text-white px-5 py-1 rounded-full text-sm font-bold pointer-events-none">
-            HOLD SPACE OR MOUSE TO FLY UP
+          <div className="absolute bottom-20 md:bottom-5 left-1/2 -translate-x-1/2 bg-black/40 text-white px-4 md:px-5 py-1 rounded-full text-[10px] md:text-sm font-bold pointer-events-none whitespace-nowrap">
+            HOLD TO FLY UP
+          </div>
+
+          {/* Audio Debug Panel */}
+          <div className="absolute top-20 left-4 bg-black/60 text-white p-3 rounded-xl text-[10px] font-mono z-40 pointer-events-auto">
+            <div className="font-bold border-b border-white/20 mb-1 pb-1 flex justify-between gap-4">
+              <span>AUDIO DEBUG</span>
+              <button onClick={testAudio} className="text-blue-400 hover:underline">TEST BROWSER AUDIO</button>
+            </div>
+            {Object.entries(AUDIO_PATHS).map(([type, paths]) => (
+              <div key={type} className="flex justify-between gap-4">
+                <span className="opacity-60">{type}:</span>
+                <span className={audioStatus[type]?.includes('error') ? 'text-red-400' : audioStatus[type] === 'playing' ? 'text-green-400' : ''}>
+                  {audioStatus[type] || 'idle'}
+                </span>
+              </div>
+            ))}
+            <div className="mt-2 text-[8px] opacity-40 leading-tight">
+              * Ensure files exist in /public/assets/audio/<br/>
+              * Files must NOT be 0 bytes
+            </div>
           </div>
         </div>
 
-        {/* Control Panel */}
-        <div className="h-[120px] bg-[#f1f2f6] border-top-[4px] border-[#2f3542] flex items-center justify-around px-10">
-          <label className="flex items-center gap-4 bg-white px-5 py-3 rounded-[20px] border-3 border-dashed border-[#ced4da] cursor-pointer hover:bg-gray-50 transition-colors">
-            <div className="text-3xl">🖼️</div>
+        {/* Control Panel - Hidden or minimized on small screens */}
+        <div className="h-16 md:h-[120px] bg-[#f1f2f6] border-t-[4px] border-[#2f3542] flex items-center justify-around px-4 md:px-10 z-20">
+          <div className="flex items-center gap-2 md:gap-4 bg-white px-3 md:px-5 py-1 md:py-3 rounded-lg md:rounded-[20px] border-2 md:border-3 border-solid border-[#ced4da]">
+            <div className="text-lg md:text-3xl">🎋</div>
             <div>
-              <div className="font-black text-sm text-[#2f3542]">PILOT PHOTO</div>
-              <div className="text-xs text-gray-400 font-bold">Click to change face...</div>
+              <div className="font-black text-[10px] md:text-sm text-[#2f3542]">BAMBOO COPTER</div>
+              <div className="hidden md:block text-xs text-gray-400 font-bold">Mission in progress...</div>
             </div>
-            <input type="file" accept="image/*" className="hidden" onChange={handleFileUpload} />
-          </label>
+          </div>
 
-          {gameState !== GameState.PLAYING && (
+          {gameState !== GameState.PLAYING && gameState !== GameState.LOADING && (
             <button 
               onClick={handleStart}
-              className="px-10 py-4 bg-[#2ed573] hover:bg-[#26c167] text-white rounded-2xl font-black text-2xl border-b-[6px] border-[#21a455] transition-all active:translate-y-1 active:border-b-0"
+              className="px-4 md:px-10 py-2 md:py-4 bg-[#2ed573] hover:bg-[#26c167] text-white rounded-lg md:rounded-2xl font-black text-sm md:text-2xl border-b-[3px] md:border-b-[6px] border-[#21a455] transition-all active:translate-y-1 active:border-b-0"
             >
-              START MISSION
+              START
             </button>
           )}
 
-          <div className="flex gap-3">
-            <div className="w-12 h-12 bg-[#ddd] border-b-4 border-gray-400 rounded-xl flex items-center justify-center font-black text-[#666]">ESC</div>
-            <div className="w-12 h-12 bg-[#ddd] border-b-4 border-gray-400 rounded-xl flex items-center justify-center font-black text-[#666]">P</div>
+          <div className="flex gap-2">
+            <div className="hidden sm:flex w-8 md:w-12 h-8 md:h-12 bg-[#ddd] border-b-2 md:border-b-4 border-gray-400 rounded-lg md:rounded-xl items-center justify-center font-black text-[10px] md:text-xs text-[#666]">ESC</div>
+            <div className="hidden sm:flex w-8 md:w-12 h-8 md:h-12 bg-[#ddd] border-b-2 md:border-b-4 border-gray-400 rounded-lg md:rounded-xl items-center justify-center font-black text-[10px] md:text-xs text-[#666]">P</div>
           </div>
         </div>
       </div>

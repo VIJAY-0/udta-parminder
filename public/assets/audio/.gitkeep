@@ -1,0 +1,5 @@
+# Audio assets directory structure
+/public/assets/audio/start/
+/public/assets/audio/bg/
+/public/assets/audio/click/
+/public/assets/audio/gameover/
