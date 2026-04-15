@@ -45,7 +45,6 @@ function useRobustImage(paths: string[], retries = 3, retryDelay = 500) {
       const src = paths[pathIndex];
 
       const img = new Image();
-      img.crossOrigin = "anonymous";
 
       img.onload = () => {
         if (cancelled) return;
@@ -251,12 +250,18 @@ export default function App() {
     if (isMuted) audio.current.stopBg();
   }, [isMuted]);
 
-  // Pre-load audio files if API endpoint exists
+  // Pre-load audio files — fetch from static manifest (Vercel/Static) or API (Local)
   useEffect(() => {
     const mgr = audio.current;
     (async () => {
       try {
-        const res = await fetch("/api/audio");
+        // Try static manifest first (best for Vercel/Production)
+        let res = await fetch("/audio-manifest.json");
+        if (!res.ok) {
+          // Fallback to local API
+          res = await fetch("/api/audio");
+        }
+        
         if (!res.ok) return;
         const data: Record<string, string[]> = await res.json();
         await Promise.all(
@@ -267,9 +272,8 @@ export default function App() {
     return () => mgr.destroy();
   }, []);
 
-  // Pilot image — try multiple paths with retry
+  // Pilot image — try standard production paths
   const faceImgRef = useRobustImage([
-    "/assets/assets/pilot.png",
     "/assets/pilot.png",
     "/pilot.png",
   ]);
