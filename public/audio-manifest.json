@@ -1,0 +1,12 @@
+{
+  "start": [],
+  "bg": [
+    "/assets/audio/bg/lakdi_ki_kaathi.mp3"
+  ],
+  "click": [
+    "/assets/audio/click/fahhh-made-with-Voicemod.mp3"
+  ],
+  "gameover": [
+    "/assets/audio/gameover/full-gali.mp3"
+  ]
+}
